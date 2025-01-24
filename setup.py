@@ -1,6 +1,5 @@
 import os
 import sys
-from datetime import datetime
 from typing import List
 
 from setuptools import find_packages, setup
@@ -15,7 +14,6 @@ except ImportError:
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BUILD_EXT = int(os.environ.get("BUILD_EXT", "0")) == 1
-IS_NIGHTLY = int(os.environ.get("NIGHTLY", "0")) == 1
 
 # we do not support windows currently
 if sys.platform == "win32":
@@ -72,7 +70,7 @@ def get_version() -> str:
 if BUILD_EXT:
     if not TORCH_AVAILABLE:
         raise ModuleNotFoundError(
-            "[extension] PyTorch is not found while CUDA_EXT=1. You need to install PyTorch first in order to build CUDA extensions"
+            "[extension] PyTorch is not found while BUILD_EXT=1. You need to install PyTorch first in order to build CUDA extensions"
         )
 
     from extensions import ALL_EXTENSIONS
@@ -82,8 +80,8 @@ if BUILD_EXT:
 
     for ext_cls in ALL_EXTENSIONS:
         ext = ext_cls()
-        if ext.support_aot and ext.is_hardware_available():
-            ext.assert_hardware_compatible()
+        if ext.support_aot and ext.is_available():
+            ext.assert_compatible()
             op_names.append(ext.name)
             ext_modules.append(ext.build_aot())
 
@@ -96,23 +94,15 @@ if BUILD_EXT:
 else:
     ext_modules = []
 
-# always put not nightly branch as the if branch
-# otherwise github will treat colossalai-nightly as the project name
-# and it will mess up with the dependency graph insights
-if not IS_NIGHTLY:
-    version = get_version()
-    package_name = "colossalai"
-else:
-    # use date as the nightly version
-    version = datetime.today().strftime("%Y.%m.%d")
-    package_name = "colossalai-nightly"
+version = get_version()
+package_name = "colossalai"
 
 setup(
     name=package_name,
     version=version,
     packages=find_packages(
         exclude=(
-            "op_builder",
+            "extensions",
             "benchmark",
             "docker",
             "tests",
@@ -121,7 +111,6 @@ setup(
             "tests",
             "scripts",
             "requirements",
-            "extensions",
             "*.egg-info",
         ),
     ),
@@ -155,6 +144,7 @@ setup(
     package_data={
         "colossalai": [
             "kernel/extensions/csrc/**/*",
+            "kernel/extensions/pybind/**/*",
         ]
     },
 )

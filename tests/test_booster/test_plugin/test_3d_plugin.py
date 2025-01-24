@@ -74,8 +74,10 @@ def run_fn(init_method, model_fn, data_gen_fn, output_transform_fn) -> Optional[
             loss = criterion(outputs[output_key])
             return loss
 
-        booster.execute_pipeline(data_iter, model, _criterion, optimizer, return_loss=True, return_outputs=False)
+        booster.execute_pipeline(data_iter, model, _criterion, optimizer, return_loss=True)
         optimizer.step()
+        grad_norm = optimizer.get_grad_norm()
+        assert grad_norm is None or isinstance(grad_norm, float)
 
     except Exception as e:
         return repr(e)
@@ -83,7 +85,7 @@ def run_fn(init_method, model_fn, data_gen_fn, output_transform_fn) -> Optional[
 
 @parameterize("init_method", ["none", "lazy"])
 def check_3d_plugin(init_method: str = "none", early_stop: bool = True):
-    """check gemini plugin over model zoo
+    """check hybrid plugin over model zoo
 
     Args:
         early_stop (bool, optional): Whether to stop when getting the first error. Defaults to True.
@@ -97,7 +99,7 @@ def check_3d_plugin(init_method: str = "none", early_stop: bool = True):
 
     # TODO(ver217): add more models
     for name, (model_fn, data_gen_fn, output_transform_fn, _, _) in model_zoo.get_sub_registry(
-        "transformers_llama_for_casual_lm"
+        "transformers_llama_for_causal_lm"
     ).items():
         err = run_fn(init_method, model_fn, data_gen_fn, output_transform_fn)
 
@@ -265,15 +267,15 @@ def run_grad_acc_test(test_args):
 
 def run_dist(rank, world_size, port, early_stop: bool = True):
     # init dist env
-    colossalai.launch(config=dict(), rank=rank, world_size=world_size, port=port, host="localhost")
+    colossalai.launch(rank=rank, world_size=world_size, port=port, host="localhost")
     check_3d_plugin(early_stop=early_stop)
     run_grad_acc_test()
 
 
 @rerun_if_address_is_in_use()
-def test_gemini_plugin(early_stop: bool = True):
+def test_3d_plugin(early_stop: bool = True):
     spawn(run_dist, 4, early_stop=early_stop)
 
 
 if __name__ == "__main__":
-    test_gemini_plugin(early_stop=False)
+    test_3d_plugin(early_stop=False)

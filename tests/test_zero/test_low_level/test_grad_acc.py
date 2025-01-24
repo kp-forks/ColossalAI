@@ -64,8 +64,12 @@ def exam_zero_1_2_grad_acc():
     zero1_optimizer.step()
     zero2_optimizer.step()
 
+    zero1_optimizer._force_wait_all_gather()
+    zero2_optimizer._force_wait_all_gather()
+
     # check updated param
     for z1p, z2p in zip(zero1_model.parameters(), zero2_model.parameters()):
+        assert not hasattr(z1p, "_all_gather_handle")
         assert torch.equal(z1p.data, z2p.data)
 
 
@@ -130,7 +134,7 @@ def exam_zero_1_grad_acc(sync):
 
 
 def run_dist(rank, world_size, port):
-    colossalai.launch(config=dict(), rank=rank, world_size=world_size, port=port, host="localhost")
+    colossalai.launch(rank=rank, world_size=world_size, port=port, host="localhost")
 
     exam_zero_1_grad_acc(sync=True)
     exam_zero_1_grad_acc(sync=False)

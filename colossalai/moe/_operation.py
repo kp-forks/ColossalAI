@@ -6,6 +6,8 @@ from torch import Tensor
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.distributed import ProcessGroup
 
+from colossalai.quantization.fp8 import all_to_all_single_fp8
+
 MOE_KERNEL = None
 
 
@@ -290,7 +292,7 @@ def moe_cumsum(inputs: Tensor, use_kernel: bool = False):
         return torch.cumsum(inputs, dim=0) - 1
 
 
-class MoeInGradScaler(torch.autograd.Function):
+class EPGradScalerIn(torch.autograd.Function):
     """
     Scale the gradient back by the number of experts
     because the batch size increases in the moe stage
@@ -298,8 +300,7 @@ class MoeInGradScaler(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx: Any, inputs: Tensor, ep_size: int) -> Tensor:
-        if ctx is not None:
-            ctx.ep_size = ep_size
+        ctx.ep_size = ep_size
         return inputs
 
     @staticmethod
@@ -307,11 +308,11 @@ class MoeInGradScaler(torch.autograd.Function):
         assert len(grad_outputs) == 1
         grad = grad_outputs[0]
         if ctx.ep_size != 1:
-            grad = grad * ctx.ep_size
+            grad.mul_(ctx.ep_size)
         return grad, None
 
 
-class MoeOutGradScaler(torch.autograd.Function):
+class EPGradScalerOut(torch.autograd.Function):
     """
     Scale the gradient by the number of experts
     because the batch size increases in the moe stage
@@ -327,8 +328,52 @@ class MoeOutGradScaler(torch.autograd.Function):
         assert len(grad_outputs) == 1
         grad = grad_outputs[0]
         if ctx.ep_size != 1:
-            grad = grad / ctx.ep_size
+            grad.div_(ctx.ep_size)
         return grad, None
+
+
+class DPGradScalerIn(torch.autograd.Function):
+    """
+    Scale the gradient back by the number of experts
+    because the batch size increases in the moe stage
+    """
+
+    @staticmethod
+    def forward(ctx: Any, inputs: Tensor, moe_dp_size: int, activated_experts: int) -> Tensor:
+        assert activated_experts != 0, f"shouldn't be called when no expert is activated"
+        ctx.moe_dp_size = moe_dp_size
+        ctx.activated_experts = activated_experts
+        return inputs
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Tensor) -> Tuple[Tensor, None, None]:
+        assert len(grad_outputs) == 1
+        grad = grad_outputs[0]
+        if ctx.moe_dp_size != ctx.activated_experts:
+            grad.mul_(ctx.activated_experts / ctx.moe_dp_size)
+        return grad, None, None
+
+
+class DPGradScalerOut(torch.autograd.Function):
+    """
+    Scale the gradient by the number of experts
+    because the batch size increases in the moe stage
+    """
+
+    @staticmethod
+    def forward(ctx: Any, inputs: Tensor, moe_dp_size: int, activated_experts: int) -> Tensor:
+        assert activated_experts != 0, f"shouldn't be called when no expert is activated"
+        ctx.moe_dp_size = moe_dp_size
+        ctx.activated_experts = activated_experts
+        return inputs
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Tensor) -> Tuple[Tensor, None, None]:
+        assert len(grad_outputs) == 1
+        grad = grad_outputs[0]
+        if ctx.moe_dp_size != ctx.activated_experts:
+            grad.mul_(ctx.moe_dp_size / ctx.activated_experts)
+        return grad, None, None
 
 
 def _all_to_all(
@@ -337,6 +382,7 @@ def _all_to_all(
     output_split_sizes: Optional[List[int]] = None,
     group=None,
     async_op: bool = False,
+    fp8_communication: bool = False,
 ):
     """
     Returns:
@@ -349,9 +395,14 @@ def _all_to_all(
     outputs = torch.empty(outputs_shape, dtype=inputs.dtype, device=inputs.device)
     inputs = inputs.contiguous()
     outputs = outputs.contiguous()
-    handle = dist.all_to_all_single(
-        outputs, inputs, output_split_sizes, input_split_sizes, group=group, async_op=async_op
-    )
+    if fp8_communication:
+        handle = all_to_all_single_fp8(
+            outputs, inputs, output_split_sizes, input_split_sizes, group=group, async_op=False
+        )
+    else:
+        handle = dist.all_to_all_single(
+            outputs, inputs, output_split_sizes, input_split_sizes, group=group, async_op=async_op
+        )
     return outputs, handle
 
 
@@ -364,6 +415,7 @@ class AllToAllUneven(torch.autograd.Function):
         output_split_sizes=None,
         group=None,
         overlap: bool = False,
+        fp8_communication: bool = False,
     ):
         """
         Returns:
@@ -373,12 +425,15 @@ class AllToAllUneven(torch.autograd.Function):
         ctx.input_split_sizes = input_split_sizes
         ctx.output_split_sizes = output_split_sizes
         ctx.group = group
-        return _all_to_all(inputs, input_split_sizes, output_split_sizes, group, overlap)
+        return _all_to_all(
+            inputs, input_split_sizes, output_split_sizes, group, overlap, fp8_communication=fp8_communication
+        )
 
     @staticmethod
     def backward(ctx: Any, *grad_outputs):
         return (
             _all_to_all(grad_outputs[0], ctx.output_split_sizes, ctx.input_split_sizes, ctx.group, False)[0],
+            None,
             None,
             None,
             None,
@@ -392,5 +447,6 @@ def all_to_all_uneven(
     output_split_sizes: Optional[List[int]] = None,
     group=None,
     overlap: bool = False,
+    fp8_communication: bool = False,
 ):
-    return AllToAllUneven.apply(inputs, input_split_sizes, output_split_sizes, group, overlap)
+    return AllToAllUneven.apply(inputs, input_split_sizes, output_split_sizes, group, overlap, fp8_communication)

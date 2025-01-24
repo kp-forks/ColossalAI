@@ -1,7 +1,7 @@
 # Setup
 
 Requirements:
-- PyTorch >= 1.11 and PyTorch <= 2.1
+- PyTorch >= 2.1
 - Python >= 3.7
 - CUDA >= 11.0
 - [NVIDIA GPU Compute Capability](https://developer.nvidia.com/cuda-gpus) >= 7.0 (V100/RTX20 and higher)
@@ -42,7 +42,7 @@ pip install -r requirements/requirements.txt
 BUILD_EXT=1 pip install .
 ```
 
-If you don't want to install and enable CUDA kernel fusion (compulsory installation when using fused optimizer), just don't specify the `CUDA_EXT`:
+If you don't want to install and enable CUDA kernel fusion (compulsory installation when using fused optimizer), just don't specify the `BUILD_EXT`:
 
 ```shell
 pip install .
